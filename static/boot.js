@@ -562,9 +562,16 @@ function expandSidebar(){
 (function _restoreSidebarState(){
   try{document.documentElement.removeAttribute('data-sidebar-collapsed');}catch(_){}
   if(!_isDesktopWidth())return;
+  const layout=document.querySelector('.layout');
   try{
-    if(localStorage.getItem(_SIDEBAR_COLLAPSED_KEY)==='1'){
-      const layout=document.querySelector('.layout');
+    const pref=localStorage.getItem(_SIDEBAR_COLLAPSED_KEY);
+    if(pref==='1'){
+      if(layout)layout.classList.add('sidebar-collapsed');
+    } else if(pref==='0'){
+      // Explicitly left open — keep it open.
+    } else if(_isCompactWorkspaceViewport()){
+      // Foldable/tablet band (641-900px): default the sidebar collapsed so the
+      // chat isn't squeezed by the 300px sidebar next to the rightpanel.
       if(layout)layout.classList.add('sidebar-collapsed');
     }
   }catch(_){}
@@ -600,6 +607,15 @@ function closeMobileWorkspacePanelFromChat(e){
   if(!_isCompactWorkspaceViewport()||_workspacePanelMode==='closed') return;
   const panel=document.querySelector('.rightpanel');
   if(panel&&panel.contains(e.target)) return;
+  // Don't close when the tap target is a workspace-panel toggle control — let
+  // that button's own onclick (toggleWorkspacePanel) handle open/close. Without
+  // this, tapping the folder toggle while the panel is open fires pointerdown
+  // here (closing the panel) and then the button's click reopens it, leaving
+  // the panel stuck open.
+  const t=e.target&&e.target.closest
+    ? e.target.closest('#btnWorkspacePanelToggle, #btnWorkspacePanelEdgeToggle, .workspace-toggle-btn, .mobile-files-btn')
+    : null;
+  if(t) return;
   closeWorkspacePanel();
 }
 function toggleWorkspacePanel(force){
