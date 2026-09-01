@@ -531,15 +531,18 @@ function _isSidebarCollapsed(){
 //   '0'  = user explicitly opened the sidebar     -> open everywhere
 //   null = no explicit preference -> collapsed ONLY in the compact desktop
 //          band (641-900px, foldable/tablet inner screens) so the chat isn't
-//          squeezed by the 300px sidebar; open everywhere else.
+//          squeezed by the 300px sidebar; open everywhere else (including
+//          phones <641px, which use the mobile slide-in drawer instead).
 // This is the single source of truth used by boot restore, bfcache restore,
 // and viewport-change handling so all paths agree on the default.
 function _sidebarShouldCollapse(){
   const pref=localStorage.getItem(_SIDEBAR_COLLAPSED_KEY);
   if(pref==='1') return true;
   if(pref==='0') return false;
-  // No explicit preference: default collapsed only in the compact band.
-  return _isCompactWorkspaceViewport();
+  // No explicit preference: default collapsed only in the compact desktop band
+  // (641-900px). _isDesktopWidth() gates out phones (<641px) so the desktop
+  // sidebar-collapsed class is never applied to the mobile slide-in drawer.
+  return _isDesktopWidth() && _isCompactWorkspaceViewport();
 }
 
 function _syncSidebarAria(){
@@ -3950,12 +3953,18 @@ window.addEventListener('pageshow', async (event) => {
   // Re-sync sidebar collapse state from localStorage. bfcache restored the
   // frozen DOM but another tab may have toggled the sidebar in the meantime.
   // Use the shared tri-state rule so an unset preference still defaults to
-  // collapsed in the compact band (matches _restoreSidebarState).
-  if (typeof _isSidebarCollapsed === 'function' && typeof toggleSidebar === 'function') {
+  // collapsed in the compact band (matches _restoreSidebarState). Apply the
+  // class directly (NOT toggleSidebar) so a derived compact-band default is
+  // never persisted as an explicit '1' — that would leak the compact default
+  // into widths above 900px.
+  if (typeof _isSidebarCollapsed === 'function') {
     try {
       const _want = _sidebarShouldCollapse();
       const _have = _isSidebarCollapsed();
-      if (_want !== _have) toggleSidebar(_want);
+      if (_want !== _have) {
+        const layout = document.querySelector('.layout');
+        if (layout) layout.classList.toggle('sidebar-collapsed', _want);
+      }
       if (typeof _syncSidebarAria === 'function') _syncSidebarAria();
     } catch (_) {}
   }

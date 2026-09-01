@@ -16,6 +16,7 @@ Run as part of the standard test suite:
     ./scripts/test.sh tests/test_mobile_layout.py -v
 """
 
+import json
 import pathlib
 import re
 from html.parser import HTMLParser
@@ -369,6 +370,107 @@ def test_sidebar_prepaint_script_handles_compact_default():
         "pre-paint script must detect the 641-900px compact band"
     assert "p==='1'" in HTML, "pre-paint script must keep explicit '1' collapse"
     assert "p==null" in HTML, "pre-paint script must default-collapse when unset in compact band"
+
+
+# ── Executed decision-matrix tests for _sidebarShouldCollapse ────────────────
+# The static checks above prove the code exists; these execute the actual
+# tri-state logic with faked matchMedia/localStorage to prove the behavior.
+
+def _extract_sidebar_should_collapse():
+    """Extract the _sidebarShouldCollapse function source from boot.js."""
+    m = re.search(r'function _sidebarShouldCollapse\(\)\{.*?\n\}', BOOT, re.DOTALL)
+    assert m, "could not find _sidebarShouldCollapse in boot.js"
+    return m.group(0)
+
+
+def _run_sidebar_should_collapse(width, pref):
+    """Execute the real _sidebarShouldCollapse JS function via node, with
+    faked matchMedia/localStorage, and return its boolean result."""
+    import subprocess
+    fn = _extract_sidebar_should_collapse()
+    pref_js = 'null' if pref is None else repr(pref)
+    script = f"""
+{fn}
+// fakes
+const _width = {width};
+globalThis.matchMedia = (q) => {{
+  q = q.replace(/\\s+/g, '');
+  if (q === '(min-width:641px)') return {{ matches: _width >= 641 }};
+  if (q === '(max-width:900px)') return {{ matches: _width <= 900 }};
+  return {{ matches: false }};
+}};
+const _store = {{}};
+const _SIDEBAR_COLLAPSED_KEY = 'hermes-webui-sidebar-collapsed';
+if ({pref_js} !== null) _store[_SIDEBAR_COLLAPSED_KEY] = {pref_js};
+globalThis.localStorage = {{
+  getItem: (k) => (k in _store ? _store[k] : null),
+  setItem: (k, v) => {{ _store[k] = v; }},
+  removeItem: (k) => {{ delete _store[k]; }},
+}};
+function _isDesktopWidth() {{ return _width >= 641; }}
+function _isCompactWorkspaceViewport() {{ return _width <= 900; }}
+console.log(JSON.stringify(_sidebarShouldCollapse()));
+"""
+    r = subprocess.run(["node", "-e", script], capture_output=True, text=True, timeout=30)
+    assert r.returncode == 0, f"node failed: {r.stderr}"
+    return json.loads(r.stdout.strip())
+
+
+def test_sidebar_should_collapse_decision_matrix():
+    """Executed decision matrix for _sidebarShouldCollapse.
+
+    unset preference: collapsed only in 641-900px (not on phones <641px)
+    explicit '1': collapsed everywhere
+    explicit '0': open everywhere
+    """
+    cases = [
+        # (width, pref, expected_collapsed)
+        (804, None, True),   # foldable inner, no pref -> collapsed
+        (1200, None, False), # desktop, no pref -> open
+        (600, None, False),  # phone, no pref -> open (mobile drawer, not desktop collapse)
+        (804, '1', True),    # explicit closed -> collapsed
+        (1200, '1', True),   # explicit closed -> collapsed even on desktop
+        (804, '0', False),   # explicit open -> open
+        (1200, '0', False),  # explicit open -> open
+        (900, None, True),   # boundary 900 -> collapsed
+        (901, None, False),  # boundary 901 -> open
+        (641, None, True),   # boundary 641 -> collapsed
+        (640, None, False),  # boundary 640 -> open (phone)
+    ]
+    for width, pref, expected in cases:
+        got = _run_sidebar_should_collapse(width, pref)
+        assert got is expected, (
+            f"width={width} pref={pref}: expected collapsed={expected}, got {got}"
+        )
+
+
+def test_sidebar_bfcache_does_not_persist_derived_default():
+    """The bfcache path must apply the class directly, never persisting a
+    derived compact-band default as an explicit '1' (which would leak into
+    widths above 900px)."""
+    # The bfcache reconciliation must NOT call toggleSidebar (which writes
+    # localStorage). It must toggle the layout class directly.
+    # Find the pageshow bfcache block.
+    bfcache = re.search(r'Re-sync sidebar collapse state.*?pageshow', BOOT, re.DOTALL)
+    # Simpler: assert toggleSidebar is not referenced in the pageshow block
+    pageshow_block = BOOT[BOOT.find("window.addEventListener('pageshow'"):]
+    # The bfcache reconciliation section:
+    idx = pageshow_block.find("Re-sync sidebar collapse state")
+    if idx >= 0:
+        section = pageshow_block[idx:idx + 900]
+        assert "toggleSidebar(" not in section, \
+            "bfcache path must not call toggleSidebar (would persist derived default)"
+        assert "classList.toggle('sidebar-collapsed'" in section or "classList.toggle(\"sidebar-collapsed\"" in section, \
+            "bfcache path must toggle the layout class directly"
+
+
+def test_sidebar_phone_does_not_set_desktop_collapse():
+    """On phones (<641px) the helper must return false (no desktop collapse),
+    so the mobile slide-in drawer's ARIA stays accurate."""
+    assert _run_sidebar_should_collapse(600, None) is False, \
+        "phone width with no pref must not apply desktop collapse"
+    assert _run_sidebar_should_collapse(600, '1') is True, \
+        "explicit '1' still collapses (user choice) — but CSS masks it on phone"
 
 
 def test_mobile_sidebar_drawer_uses_transform_instead_of_left():
