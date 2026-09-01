@@ -23,6 +23,7 @@ from html.parser import HTMLParser
 REPO = pathlib.Path(__file__).parent.parent
 HTML = (REPO / "static" / "index.html").read_text(encoding="utf-8")
 CSS  = (REPO / "static" / "style.css").read_text(encoding="utf-8")
+BOOT = (REPO / "static" / "boot.js").read_text(encoding="utf-8")
 
 
 def _max_width_media_blocks(width_px):
@@ -244,6 +245,130 @@ def test_rightpanel_mobile_slide_over_css():
         "open mobile rightpanel should keep the edge shadow"
     assert re.search(r'\.rightpanel\s+\.panel-header\{[^}]*row-gap:\s*8px', rightpanel_block), \
         "mobile workspace header should keep comfortable row spacing"
+
+
+def test_rightpanel_slide_over_at_900px_compact_band():
+    """The right-panel slide-over drawer must exist at the 900px compact band.
+
+    _isCompactWorkspaceViewport() treats <=900px as compact and opens the
+    workspace panel via .mobile-open, so the drawer CSS must live in the
+    @media(max-width:900px) block — not just the 640px phone block — or the
+    panel stays display:none on foldable/tablet inner screens (641-900px).
+    """
+    compact_900 = "\n".join(_max_width_media_blocks(900))
+    assert compact_900, "Missing @media(max-width:900px) block in style.css"
+    # There are two .rightpanel rules in the 900px block: the base display:none
+    # and the slide-over drawer. Find the drawer rule (position:fixed).
+    drawer = re.search(r'\.rightpanel\{[^}]*position:\s*fixed[^}]*\}', compact_900, re.DOTALL)
+    assert drawer, "900px compact .rightpanel must have a position:fixed drawer rule"
+    assert "display:flex!important" in drawer.group(0), \
+        "900px compact .rightpanel drawer must be display:flex (visible)"
+    open_rule = re.search(r'\.rightpanel\.mobile-open\{[^}]*\}', compact_900, re.DOTALL)
+    assert open_rule and re.search(r'right:\s*0\s*!important', open_rule.group(0)), \
+        "900px compact .rightpanel.mobile-open must slide in to right:0"
+
+
+def test_sidebar_collapse_available_from_641px():
+    """Sidebar desktop collapse must work in the foldable band (641-900px).
+
+    The sidebar needs position:relative from min-width:641px so the desktop
+    collapse mechanism (.sidebar-collapsed -> width:0) applies on foldable
+    inner screens, not only at >=901px.
+    """
+    assert "@media(min-width:641px)" in CSS, "Missing @media(min-width:641px) block"
+    # Find the 641px block that sets .sidebar{position:relative}
+    pattern = re.compile(r'@media\s*\(\s*min-width\s*:\s*641px\s*\)\s*\{')
+    found = False
+    for match in pattern.finditer(CSS):
+        open_brace = match.end() - 1
+        depth = 0
+        for idx in range(open_brace, len(CSS)):
+            if CSS[idx] == "{":
+                depth += 1
+            elif CSS[idx] == "}":
+                depth -= 1
+                if depth == 0:
+                    block = CSS[open_brace + 1:idx]
+                    if ".sidebar{position:relative" in block.replace(" ", ""):
+                        found = True
+                    break
+    assert found, "641px block must set .sidebar{position:relative} for foldable-band collapse"
+
+
+def test_rightpanel_in_flow_only_at_901px():
+    """Right panel must stay a fixed overlay through 900px, in-flow at >=901px.
+
+    If .rightpanel{position:relative} were applied at 641px it would sit in-flow
+    at 300px next to the sidebar and squeeze the chat on foldable inner screens.
+    """
+    pattern = re.compile(r'@media\s*\(\s*min-width\s*:\s*901px\s*\)\s*\{')
+    found = False
+    for match in pattern.finditer(CSS):
+        open_brace = match.end() - 1
+        depth = 0
+        for idx in range(open_brace, len(CSS)):
+            if CSS[idx] == "{":
+                depth += 1
+            elif CSS[idx] == "}":
+                depth -= 1
+                if depth == 0:
+                    block = CSS[open_brace + 1:idx]
+                    if ".rightpanel{position:relative" in block.replace(" ", ""):
+                        found = True
+                    break
+    assert found, "901px block must set .rightpanel{position:relative}"
+
+
+def test_sidebar_tristate_helper_present():
+    """boot.js must centralize the tri-state sidebar collapse decision.
+
+    Explicit '1' = collapsed, '0' = open, unset = collapsed only in the
+    compact band (641-900px). All restore paths (boot, bfcache, resize) must
+    call this single helper so they agree on the default.
+    """
+    assert "function _sidebarShouldCollapse" in BOOT, \
+        "boot.js must define the _sidebarShouldCollapse tri-state helper"
+    assert "_SIDEBAR_COLLAPSED_KEY" in BOOT, "sidebar key constant missing"
+
+
+def test_sidebar_tristate_used_in_bfcache_restore():
+    """bfcache restore must use the shared tri-state helper, not the old boolean.
+
+    The old code compared the preference only against '1', so an unset compact
+    page that was collapsed would be re-expanded on back/forward navigation.
+    """
+    assert "_sidebarShouldCollapse()" in BOOT, \
+        "boot.js must call _sidebarShouldCollapse in the bfcache restore path"
+    # The bfcache path must not read the key directly with a bare === '1'
+    assert "localStorage.getItem('hermes-webui-sidebar-collapsed') === '1'" not in BOOT, \
+        "bfcache restore must not use the old boolean-only comparison"
+
+
+def test_sidebar_tristate_used_on_resize():
+    """Viewport-change handling must re-apply the tri-state sidebar default.
+
+    Unfolding a foldable (phone 640px -> inner 804px) or resizing desktop ->
+    inner must collapse the sidebar when no preference is set, without
+    persisting the derived default as an explicit '1'.
+    """
+    assert "_sidebarShouldCollapse()" in BOOT, \
+        "boot.js must call _sidebarShouldCollapse on resize"
+    assert "classList.toggle('sidebar-collapsed', _want)" in BOOT, \
+        "resize handler must apply the class directly (not persist via toggleSidebar)"
+
+
+def test_sidebar_prepaint_script_handles_compact_default():
+    """The inline pre-paint script must mirror the tri-state rule.
+
+    On a fresh 804px load with no preference, the sidebar must be collapsed
+    from first paint (no flash) — the inline script in index.html must set
+    data-sidebar-collapsed for the compact band, not just for explicit '1'.
+    """
+    assert "hermes-webui-sidebar-collapsed" in HTML, "pre-paint script missing"
+    assert "max-width: 900px" in HTML and "min-width: 641px" in HTML, \
+        "pre-paint script must detect the 641-900px compact band"
+    assert "p==='1'" in HTML, "pre-paint script must keep explicit '1' collapse"
+    assert "p==null" in HTML, "pre-paint script must default-collapse when unset in compact band"
 
 
 def test_mobile_sidebar_drawer_uses_transform_instead_of_left():

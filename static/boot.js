@@ -526,6 +526,22 @@ function _isSidebarCollapsed(){
   return document.querySelector('.layout')?.classList.contains('sidebar-collapsed')||false;
 }
 
+// Tri-state sidebar collapse preference.
+//   '1'  = user explicitly collapsed the sidebar  -> collapsed everywhere
+//   '0'  = user explicitly opened the sidebar     -> open everywhere
+//   null = no explicit preference -> collapsed ONLY in the compact desktop
+//          band (641-900px, foldable/tablet inner screens) so the chat isn't
+//          squeezed by the 300px sidebar; open everywhere else.
+// This is the single source of truth used by boot restore, bfcache restore,
+// and viewport-change handling so all paths agree on the default.
+function _sidebarShouldCollapse(){
+  const pref=localStorage.getItem(_SIDEBAR_COLLAPSED_KEY);
+  if(pref==='1') return true;
+  if(pref==='0') return false;
+  // No explicit preference: default collapsed only in the compact band.
+  return _isCompactWorkspaceViewport();
+}
+
 function _syncSidebarAria(){
   // Mirror the open/collapsed state on the active rail button via aria-expanded
   // so screen readers announce the toggle. Open=true, collapsed=false.
@@ -564,14 +580,7 @@ function expandSidebar(){
   if(!_isDesktopWidth())return;
   const layout=document.querySelector('.layout');
   try{
-    const pref=localStorage.getItem(_SIDEBAR_COLLAPSED_KEY);
-    if(pref==='1'){
-      if(layout)layout.classList.add('sidebar-collapsed');
-    } else if(pref==='0'){
-      // Explicitly left open — keep it open.
-    } else if(_isCompactWorkspaceViewport()){
-      // Foldable/tablet band (641-900px): default the sidebar collapsed so the
-      // chat isn't squeezed by the 300px sidebar next to the rightpanel.
+    if(_sidebarShouldCollapse()){
       if(layout)layout.classList.add('sidebar-collapsed');
     }
   }catch(_){}
@@ -2627,6 +2636,21 @@ function applyEmptyStatePanelPref(){
 window.addEventListener('resize',()=>{
   _syncWorkspacePanelInlineWidth();
   syncWorkspacePanelState();
+  // Re-apply the sidebar default on viewport change (e.g. foldable unfold:
+  // phone 640px -> inner 804px, or desktop -> inner). The tri-state rule
+  // defaults an unset preference to collapsed in the compact band, so this
+  // keeps the sidebar consistent regardless of which width loaded first.
+  // Apply the class directly (NOT toggleSidebar) so a derived compact-band
+  // default is never persisted as an explicit '1' — that would leak the
+  // compact default into widths above 900px.
+  try{
+    if(typeof _sidebarShouldCollapse==='function'){
+      const _want=_sidebarShouldCollapse();
+      const layout=document.querySelector('.layout');
+      if(layout) layout.classList.toggle('sidebar-collapsed', _want);
+      if(typeof _syncSidebarAria==='function') _syncSidebarAria();
+    }
+  }catch(_){}
   if(!window.visualViewport) _forceMobileViewportReflow();
 });
 
@@ -3925,9 +3949,11 @@ window.addEventListener('pageshow', async (event) => {
   if (typeof startGatewaySSE === 'function') try { startGatewaySSE(); } catch (_) {}
   // Re-sync sidebar collapse state from localStorage. bfcache restored the
   // frozen DOM but another tab may have toggled the sidebar in the meantime.
+  // Use the shared tri-state rule so an unset preference still defaults to
+  // collapsed in the compact band (matches _restoreSidebarState).
   if (typeof _isSidebarCollapsed === 'function' && typeof toggleSidebar === 'function') {
     try {
-      const _want = localStorage.getItem('hermes-webui-sidebar-collapsed') === '1';
+      const _want = _sidebarShouldCollapse();
       const _have = _isSidebarCollapsed();
       if (_want !== _have) toggleSidebar(_want);
       if (typeof _syncSidebarAria === 'function') _syncSidebarAria();
