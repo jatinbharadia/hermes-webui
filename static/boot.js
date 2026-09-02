@@ -536,7 +536,8 @@ function _isSidebarCollapsed(){
 // This is the single source of truth used by boot restore, bfcache restore,
 // and viewport-change handling so all paths agree on the default.
 function _sidebarShouldCollapse(){
-  const pref=localStorage.getItem(_SIDEBAR_COLLAPSED_KEY);
+  let pref=null;
+  try{pref=localStorage.getItem(_SIDEBAR_COLLAPSED_KEY);}catch(_){pref=null;}
   if(pref==='1') return true;
   if(pref==='0') return false;
   // No explicit preference: default collapsed only in the compact desktop band
