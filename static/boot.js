@@ -545,6 +545,37 @@ function _sidebarShouldCollapse(){
   return _isDesktopWidth() && _isCompactWorkspaceViewport();
 }
 
+// Shared non-persisting reconciliation of sidebar state. Calculates the
+// desired state via _sidebarShouldCollapse() and applies it to the DOM:
+//   1. when at desktop width, clear any mobile drawer state (mobile-open,
+//      mobile-panel-drawer, mobile-session-page, overlay) so the mobile
+//      classes cannot block the desktop collapse selector (:not(.mobile-open));
+//   2. apply the desktop sidebar-collapsed class ONLY while
+//      _isDesktopWidth() is true — an explicit stored '1' is left in
+//      localStorage untouched so it still applies at the next desktop-width
+//      transition, but a derived compact default is never persisted;
+//   3. synchronize ARIA after the final class state.
+// Used by boot restore, window resize, and bfcache restore so the lifecycle
+// paths cannot drift apart.
+function _applySidebarState(){
+  const layout=document.querySelector('.layout');
+  if(!layout) return;
+  const desktop=_isDesktopWidth();
+  if(desktop){
+    // Leaving phone widths: clear mobile drawer ownership so the desktop
+    // collapse selector (.sidebar:not(.mobile-open)) can take effect.
+    const sidebar=document.querySelector('.sidebar');
+    if(sidebar) sidebar.classList.remove('mobile-open','mobile-session-page','mobile-panel-drawer');
+    const overlay=$('mobileOverlay');
+    if(overlay) overlay.classList.remove('visible');
+    layout.classList.toggle('sidebar-collapsed', _sidebarShouldCollapse());
+  } else {
+    // Phone width: mobile drawer owns the sidebar; clear desktop ownership.
+    layout.classList.remove('sidebar-collapsed');
+  }
+  if(typeof _syncSidebarAria==='function') _syncSidebarAria();
+}
+
 function _syncSidebarAria(){
   // Mirror the open/collapsed state on the active rail button via aria-expanded
   // so screen readers announce the toggle. Open=true, collapsed=false.
@@ -581,13 +612,7 @@ function expandSidebar(){
 (function _restoreSidebarState(){
   try{document.documentElement.removeAttribute('data-sidebar-collapsed');}catch(_){}
   if(!_isDesktopWidth())return;
-  const layout=document.querySelector('.layout');
-  try{
-    if(_sidebarShouldCollapse()){
-      if(layout)layout.classList.add('sidebar-collapsed');
-    }
-  }catch(_){}
-  _syncSidebarAria();
+  _applySidebarState();
 })();
 // ── Boot-time tab visibility ────────────────────────────────────────────────
 // Apply hidden tabs from localStorage. The primary flash-prevention is an
@@ -2639,20 +2664,13 @@ function applyEmptyStatePanelPref(){
 window.addEventListener('resize',()=>{
   _syncWorkspacePanelInlineWidth();
   syncWorkspacePanelState();
-  // Re-apply the sidebar default on viewport change (e.g. foldable unfold:
-  // phone 640px -> inner 804px, or desktop -> inner). The tri-state rule
-  // defaults an unset preference to collapsed in the compact band, so this
-  // keeps the sidebar consistent regardless of which width loaded first.
-  // Apply the class directly (NOT toggleSidebar) so a derived compact-band
-  // default is never persisted as an explicit '1' — that would leak the
-  // compact default into widths above 900px.
+  // Re-apply the sidebar state on viewport change (e.g. foldable unfold:
+  // phone 640px -> inner 804px, or desktop -> inner). The shared apply helper
+  // clears mobile drawer ownership when entering desktop width (so the mobile
+  // classes cannot block the desktop collapse selector), applies the tri-state
+  // default, and syncs ARIA — all without persisting anything to localStorage.
   try{
-    if(typeof _sidebarShouldCollapse==='function'){
-      const _want=_sidebarShouldCollapse();
-      const layout=document.querySelector('.layout');
-      if(layout) layout.classList.toggle('sidebar-collapsed', _want);
-      if(typeof _syncSidebarAria==='function') _syncSidebarAria();
-    }
+    if(typeof _applySidebarState==='function') _applySidebarState();
   }catch(_){}
   if(!window.visualViewport) _forceMobileViewportReflow();
 });
@@ -3950,24 +3968,15 @@ window.addEventListener('pageshow', async (event) => {
   }
   // Restart the gateway SSE watcher — the persisted connection is dead after bfcache
   if (typeof startGatewaySSE === 'function') try { startGatewaySSE(); } catch (_) {}
-  // Re-sync sidebar collapse state from localStorage. bfcache restored the
-  // frozen DOM but another tab may have toggled the sidebar in the meantime.
-  // Use the shared tri-state rule so an unset preference still defaults to
-  // collapsed in the compact band (matches _restoreSidebarState). Apply the
-  // class directly (NOT toggleSidebar) so a derived compact-band default is
-  // never persisted as an explicit '1' — that would leak the compact default
-  // into widths above 900px.
-  if (typeof _isSidebarCollapsed === 'function') {
-    try {
-      const _want = _sidebarShouldCollapse();
-      const _have = _isSidebarCollapsed();
-      if (_want !== _have) {
-        const layout = document.querySelector('.layout');
-        if (layout) layout.classList.toggle('sidebar-collapsed', _want);
-      }
-      if (typeof _syncSidebarAria === 'function') _syncSidebarAria();
-    } catch (_) {}
-  }
+  // Re-sync sidebar state after bfcache restore. bfcache restored the frozen
+  // DOM but another tab may have toggled the sidebar in the meantime. The
+  // shared apply helper clears mobile drawer ownership when at desktop width,
+  // applies the tri-state default, and syncs ARIA — all without persisting
+  // anything to localStorage (so a derived compact-band default never leaks
+  // into widths above 900px).
+  try{
+    if(typeof _applySidebarState==='function') _applySidebarState();
+  }catch(_){}
 });
 
 async function shutdownServer() {

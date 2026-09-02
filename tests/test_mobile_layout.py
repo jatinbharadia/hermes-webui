@@ -350,12 +350,18 @@ def test_sidebar_tristate_used_on_resize():
 
     Unfolding a foldable (phone 640px -> inner 804px) or resizing desktop ->
     inner must collapse the sidebar when no preference is set, without
-    persisting the derived default as an explicit '1'.
+    persisting the derived default as an explicit '1'. The resize handler
+    routes through the shared _applySidebarState helper (which uses the
+    tri-state calculation and never writes localStorage).
     """
     assert "_sidebarShouldCollapse()" in BOOT, \
-        "boot.js must call _sidebarShouldCollapse on resize"
-    assert "classList.toggle('sidebar-collapsed', _want)" in BOOT, \
-        "resize handler must apply the class directly (not persist via toggleSidebar)"
+        "boot.js must define and use _sidebarShouldCollapse (via the apply helper)"
+    assert "_applySidebarState()" in BOOT, \
+        "boot.js must apply sidebar state via the shared non-persisting helper"
+    # The helper must not persist: no localStorage.setItem outside toggleSidebar
+    apply_fn = re.search(r'function _applySidebarState\(\)\{.*?\n\}', BOOT, re.DOTALL)
+    assert apply_fn and "localStorage.setItem" not in apply_fn.group(0), \
+        "the apply helper must never persist the derived state"
 
 
 def test_sidebar_prepaint_script_handles_compact_default():
@@ -445,23 +451,55 @@ def test_sidebar_should_collapse_decision_matrix():
 
 
 def test_sidebar_bfcache_does_not_persist_derived_default():
-    """The bfcache path must apply the class directly, never persisting a
-    derived compact-band default as an explicit '1' (which would leak into
-    widths above 900px)."""
-    # The bfcache reconciliation must NOT call toggleSidebar (which writes
-    # localStorage). It must toggle the layout class directly.
-    # Find the pageshow bfcache block.
-    bfcache = re.search(r'Re-sync sidebar collapse state.*?pageshow', BOOT, re.DOTALL)
-    # Simpler: assert toggleSidebar is not referenced in the pageshow block
+    """The bfcache path must reconcile via the shared non-persisting apply
+    helper, never persisting a derived compact-band default as an explicit
+    '1' (which would leak into widths above 900px)."""
     pageshow_block = BOOT[BOOT.find("window.addEventListener('pageshow'"):]
     # The bfcache reconciliation section:
-    idx = pageshow_block.find("Re-sync sidebar collapse state")
-    if idx >= 0:
-        section = pageshow_block[idx:idx + 900]
-        assert "toggleSidebar(" not in section, \
-            "bfcache path must not call toggleSidebar (would persist derived default)"
-        assert "classList.toggle('sidebar-collapsed'" in section or "classList.toggle(\"sidebar-collapsed\"" in section, \
-            "bfcache path must toggle the layout class directly"
+    idx = pageshow_block.find("Re-sync sidebar")
+    assert idx >= 0, "bfcache sidebar reconciliation section missing"
+    section = pageshow_block[idx:idx + 900]
+    assert "toggleSidebar(" not in section, \
+        "bfcache path must not call toggleSidebar (would persist derived default)"
+    assert "_applySidebarState()" in section, \
+        "bfcache path must reconcile via the shared _applySidebarState helper"
+
+
+def test_sidebar_lifecycle_paths_use_shared_apply_helper():
+    """Boot restore, resize, and bfcache restore must all route sidebar state
+    application through the shared _applySidebarState helper so the lifecycle
+    paths cannot drift apart (round-3 maintainer review)."""
+    assert "function _applySidebarState" in BOOT, \
+        "boot.js must define the shared _applySidebarState helper"
+    # boot restore
+    restore_idx = BOOT.find("_restoreSidebarState")
+    restore_block = BOOT[restore_idx:restore_idx + 400]
+    assert "_applySidebarState()" in restore_block, \
+        "boot restore must use the shared apply helper"
+    # resize handler
+    resize_idx = BOOT.find("window.addEventListener('resize'")
+    resize_block = BOOT[resize_idx:resize_idx + 1200]
+    assert "_applySidebarState()" in resize_block, \
+        "resize handler must use the shared apply helper"
+    # bfcache (pageshow)
+    pageshow_block = BOOT[BOOT.find("window.addEventListener('pageshow'"):]
+    assert "_applySidebarState()" in pageshow_block, \
+        "bfcache path must use the shared apply helper"
+
+
+def test_apply_sidebar_state_clears_mobile_drawer_on_desktop():
+    """When at desktop width, _applySidebarState must clear the mobile drawer
+    classes (mobile-open etc.) so they cannot block the desktop collapse
+    selector .sidebar:not(.mobile-open) — the round-3 foldable-unfold bug."""
+    fn = re.search(r'function _applySidebarState\(\)\{.*?\n\}', BOOT, re.DOTALL)
+    assert fn, "could not find _applySidebarState in boot.js"
+    body = fn.group(0)
+    assert "mobile-open" in body and "mobile-panel-drawer" in body and "mobile-session-page" in body, \
+        "apply helper must clear mobile drawer classes at desktop width"
+    assert "sidebar-collapsed" in body, \
+        "apply helper must apply the desktop collapse class"
+    assert "localStorage.setItem" not in body, \
+        "apply helper must never persist to localStorage"
 
 
 def test_sidebar_phone_does_not_set_desktop_collapse():
