@@ -426,6 +426,174 @@ console.log(JSON.stringify(_sidebarShouldCollapse()));
     return json.loads(r.stdout.strip())
 
 
+_BOOT_JS = BOOT  # alias used by the lifecycle harness
+
+
+def _extract_boot_js_functions(*names):
+    """Extract named function definitions from boot.js source (simple
+    brace-matching extraction, adequate for the sidebar helper functions)."""
+    out = []
+    for name in names:
+        m = re.search(r'function %s\(' % re.escape(name), _BOOT_JS)
+        assert m, f"function {name} not found in boot.js"
+        start = m.start()
+        depth = 0
+        i = _BOOT_JS.index('{', m.end() - 1)
+        for j in range(i, len(_BOOT_JS)):
+            if _BOOT_JS[j] == '{':
+                depth += 1
+            elif _BOOT_JS[j] == '}':
+                depth -= 1
+                if depth == 0:
+                    out.append(_BOOT_JS[start:j + 1])
+                    break
+    return '\n'.join(out)
+
+
+def _run_sidebar_lifecycle(start_width, start_drawer_open, end_width, pref):
+    """Execute the real _applySidebarState() against fake DOM stubs and
+    return the post-transition class/storage/ARIA state as a dict.
+
+    Simulates: boot at start_width (drawer optionally open), then a viewport
+    transition to end_width. Uses fake classList/querySelector stubs — no
+    browser required.
+    """
+    import shutil
+    if shutil.which("node") is None:
+        pytest.skip("node is not available for executing the JS decision matrix")
+    import subprocess
+    helpers = _extract_boot_js_functions(
+        'closeMobileSidebar', '_isDesktopWidth', '_isCompactWorkspaceViewport',
+        '_sidebarShouldCollapse', '_syncSidebarAria', '_applySidebarState')
+    pref_js = 'null' if pref is None else repr(pref)
+    script = f"""
+{helpers}
+// ── fake DOM ──
+function fakeClassList(initial) {{
+  const s = new Set(initial || []);
+  return {{
+    set: s,
+    add: (...c) => c.forEach(x => s.add(x)),
+    remove: (...c) => c.forEach(x => s.delete(x)),
+    toggle: (c, force) => {{
+      if (force === undefined) {{ s.has(c) ? s.delete(c) : s.add(c); return s.has(c); }}
+      if (force) s.add(c); else s.delete(c); return force;
+    }},
+    contains: (c) => s.has(c),
+  }};
+}}
+const els = {{
+  '.layout':    {{ classList: fakeClassList([]) }},
+  '.sidebar':   {{ classList: fakeClassList({json.dumps(['mobile-open'] if start_drawer_open else [])}) }},
+  '#mobileOverlay': {{ classList: fakeClassList([]) }},
+}};
+globalThis.document = {{
+  querySelector: (sel) => els[sel] || null,
+  querySelectorAll: () => [],
+  documentElement: {{ classList: fakeClassList([]), removeAttribute() {{}} }},
+}};
+globalThis.$ = (id) => els['#' + id] || null;
+// ── fake viewport + storage ──
+let _width = {start_width};
+globalThis.matchMedia = (q) => {{
+  q = q.replace(/\\s+/g, '');
+  if (q === '(min-width:641px)') return {{ matches: _width >= 641 }};
+  if (q === '(max-width:900px)') return {{ matches: _width <= 900 }};
+  return {{ matches: false }};
+}};
+globalThis.window = {{ matchMedia: globalThis.matchMedia }};
+const _store = {{}};
+const _SIDEBAR_COLLAPSED_KEY = 'hermes-webui-sidebar-collapsed';
+if ({pref_js} !== null) _store[_SIDEBAR_COLLAPSED_KEY] = {pref_js};
+const _writes = [];
+globalThis.localStorage = {{
+  getItem: (k) => (k in _store ? _store[k] : null),
+  setItem: (k, v) => {{ _writes.push([k, v]); _store[k] = v; }},
+  removeItem: (k) => {{ delete _store[k]; }},
+}};
+function _isCompactWorkspaceViewport() {{ return _width <= 900; }}
+let _ariaCalls = 0;
+function _syncSidebarAria() {{ _ariaCalls++; }}
+// ── run: boot-time apply at start_width, then transition to end_width ──
+_applySidebarState();
+_width = {end_width};
+_applySidebarState();
+console.log(JSON.stringify({{
+  layout: [...els['.layout'].classList.set],
+  sidebar: [...els['.sidebar'].classList.set],
+  overlay: [...els['#mobileOverlay'].classList.set],
+  storage: _store,
+  writes: _writes,
+  ariaCalls: _ariaCalls,
+}}));
+"""
+    r = subprocess.run(["node", "-e", script], capture_output=True, text=True, timeout=30)
+    assert r.returncode == 0, f"node failed: {r.stderr}"
+    return json.loads(r.stdout.strip())
+
+
+def test_sidebar_lifecycle_unfold_drawer_open_640_to_804():
+    """The round-3 blocker, executed: drawer open at 640px, unfold to 804px
+    with no stored preference. The shared apply helper must clear the mobile
+    drawer classes, apply the compact-band collapse default, and leave
+    localStorage untouched."""
+    st = _run_sidebar_lifecycle(640, True, 804, None)
+    assert st['layout'] == ['sidebar-collapsed']
+    assert st['sidebar'] == [], "mobile drawer classes must be cleared on unfold"
+    assert st['overlay'] == [], "mobile overlay must be hidden on unfold"
+    assert st['storage'] == {}, "derived compact default must not be persisted"
+    assert st['writes'] == []
+
+
+def test_sidebar_lifecycle_fold_804_to_640_drawer_reowned_by_mobile():
+    """Inverse transition: 804px (collapsed) -> fold to 640px. The desktop
+    collapse class must be dropped; the mobile drawer owns the sidebar again."""
+    st = _run_sidebar_lifecycle(804, False, 640, None)
+    assert st['layout'] == [], "sidebar-collapsed must be removed at phone width"
+    assert st['sidebar'] == []
+    assert st['storage'] == {}
+
+
+def test_sidebar_lifecycle_unfold_explicit_open_pref():
+    """Unfold with an explicit '0' (user chose open): no collapse applied."""
+    st = _run_sidebar_lifecycle(640, True, 804, '0')
+    assert st['layout'] == []
+    assert st['sidebar'] == []
+    assert st['storage'] == {'hermes-webui-sidebar-collapsed': '0'}
+
+
+def test_sidebar_lifecycle_unfold_explicit_closed_pref():
+    """Unfold with an explicit '1' (user chose closed): collapse applied."""
+    st = _run_sidebar_lifecycle(640, False, 804, '1')
+    assert st['layout'] == ['sidebar-collapsed']
+    assert st['sidebar'] == []
+    assert st['storage'] == {'hermes-webui-sidebar-collapsed': '1'}
+
+
+def test_sidebar_lifecycle_desktop_wide_transition():
+    """804 -> 1200 (desktop, no pref): drawer classes cleared, sidebar open."""
+    st = _run_sidebar_lifecycle(804, True, 1200, None)
+    assert st['layout'] == [], "no pref on wide desktop -> sidebar open"
+    assert st['sidebar'] == []
+
+
+def test_apply_sidebar_state_delegates_to_close_mobile_sidebar():
+    """_applySidebarState must reuse closeMobileSidebar() rather than inlining
+    the same three class removals + overlay hide (keeps one shared path)."""
+    body = _js_function_body(_BOOT_JS, "_applySidebarState")
+    assert "closeMobileSidebar()" in body, \
+        "apply helper should delegate mobile-class clearing to closeMobileSidebar()"
+    assert "classList.remove('mobile-open'" not in body, \
+        "apply helper should not re-inline the closeMobileSidebar body"
+
+
+def test_sidebar_lifecycle_unfold_drawer_open_640_to_804_universal():
+    """Source-level guard kept alongside the executed matrix: the apply helper
+    must exist and route through the shared close helper."""
+    assert "function _applySidebarState()" in _BOOT_JS
+    assert "closeMobileSidebar()" in _BOOT_JS
+
+
 def test_sidebar_should_collapse_decision_matrix():
     """Executed decision matrix for _sidebarShouldCollapse.
 
@@ -494,12 +662,14 @@ def test_sidebar_lifecycle_paths_use_shared_apply_helper():
 def test_apply_sidebar_state_clears_mobile_drawer_on_desktop():
     """When at desktop width, _applySidebarState must clear the mobile drawer
     classes (mobile-open etc.) so they cannot block the desktop collapse
-    selector .sidebar:not(.mobile-open) — the round-3 foldable-unfold bug."""
-    fn = re.search(r'function _applySidebarState\(\)\{.*?\n\}', BOOT, re.DOTALL)
-    assert fn, "could not find _applySidebarState in boot.js"
-    body = fn.group(0)
-    assert "mobile-open" in body and "mobile-panel-drawer" in body and "mobile-session-page" in body, \
-        "apply helper must clear mobile drawer classes at desktop width"
+    selector .sidebar:not(.mobile-open) — the round-3 foldable-unfold bug.
+
+    The clearing itself is delegated to closeMobileSidebar(); the executed
+    lifecycle matrix above proves the behavior, this checks the wiring and
+    the no-persist contract."""
+    body = _js_function_body(BOOT, "_applySidebarState")
+    assert "closeMobileSidebar()" in body, \
+        "apply helper must delegate mobile drawer clearing to closeMobileSidebar()"
     assert "sidebar-collapsed" in body, \
         "apply helper must apply the desktop collapse class"
     assert "localStorage.setItem" not in body, \

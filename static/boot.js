@@ -565,10 +565,7 @@ function _applySidebarState(){
   if(desktop){
     // Leaving phone widths: clear mobile drawer ownership so the desktop
     // collapse selector (.sidebar:not(.mobile-open)) can take effect.
-    const sidebar=document.querySelector('.sidebar');
-    if(sidebar) sidebar.classList.remove('mobile-open','mobile-session-page','mobile-panel-drawer');
-    const overlay=$('mobileOverlay');
-    if(overlay) overlay.classList.remove('visible');
+    closeMobileSidebar();
     layout.classList.toggle('sidebar-collapsed', _sidebarShouldCollapse());
   } else {
     // Phone width: mobile drawer owns the sidebar; clear desktop ownership.
