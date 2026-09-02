@@ -19,6 +19,7 @@ Run as part of the standard test suite:
 import json
 import pathlib
 import re
+import pytest
 from html.parser import HTMLParser
 
 REPO = pathlib.Path(__file__).parent.parent
@@ -392,6 +393,9 @@ def _extract_sidebar_should_collapse():
 def _run_sidebar_should_collapse(width, pref):
     """Execute the real _sidebarShouldCollapse JS function via node, with
     faked matchMedia/localStorage, and return its boolean result."""
+    import shutil
+    if shutil.which("node") is None:
+        pytest.skip("node is not available for executing the JS decision matrix")
     import subprocess
     fn = _extract_sidebar_should_collapse()
     pref_js = 'null' if pref is None else repr(pref)
@@ -509,6 +513,36 @@ def test_sidebar_phone_does_not_set_desktop_collapse():
         "phone width with no pref must not apply desktop collapse"
     assert _run_sidebar_should_collapse(600, '1') is True, \
         "explicit '1' still collapses (user choice) — but CSS masks it on phone"
+
+
+def test_workspace_toggle_close_race_guard_present():
+    """The stuck-open drawer fix must keep its pointerdown guard.
+
+    closeMobileWorkspacePanelFromChat fires on any pointerdown inside #mainChat
+    (the composer and the workspace toggle button live inside it). Without the
+    closest() guard, tapping the folder toggle while the panel is open closes
+    the panel on pointerdown and the button's own click immediately reopens it —
+    the drawer appears stuck open. This is one of the three headline bugs the
+    PR fixes, so lock the guard in.
+    """
+    fn = _js_function_body(BOOT, "closeMobileWorkspacePanelFromChat")
+    # The guard must short-circuit before closeWorkspacePanel()
+    assert "#btnWorkspacePanelToggle" in fn, \
+        "pointerdown close must ignore taps on the workspace panel toggle"
+    for selector in ("#btnWorkspacePanelEdgeToggle", ".workspace-toggle-btn", ".mobile-files-btn"):
+        assert selector in fn, f"toggle guard must also cover {selector}"
+    assert fn.index("if(t) return;") < fn.index("closeWorkspacePanel()"), \
+        "the guard must return before closeWorkspacePanel() runs"
+
+
+def test_executed_sidebar_tests_skip_cleanly_without_node():
+    """The executed decision-matrix tests require node; skip cleanly when it's
+    absent instead of failing with an opaque FileNotFoundError."""
+    import shutil
+    if shutil.which("node") is None:
+        pytest.skip("node is not available for executing the JS decision matrix")
+    # sanity: the runner is importable and works when node exists
+    assert _run_sidebar_should_collapse(804, None) is True
 
 
 def test_mobile_sidebar_drawer_uses_transform_instead_of_left():
