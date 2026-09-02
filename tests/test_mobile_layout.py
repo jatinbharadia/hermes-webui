@@ -484,8 +484,8 @@ function fakeClassList(initial) {{
 }}
 const els = {{
   '.layout':    {{ classList: fakeClassList([]) }},
-  '.sidebar':   {{ classList: fakeClassList({json.dumps(['mobile-open'] if start_drawer_open else [])}) }},
-  '#mobileOverlay': {{ classList: fakeClassList([]) }},
+  '.sidebar':   {{ classList: fakeClassList({json.dumps(['mobile-open', 'mobile-session-page', 'mobile-panel-drawer'] if start_drawer_open else [])}) }},
+  '#mobileOverlay': {{ classList: fakeClassList({json.dumps(['visible'] if start_drawer_open else [])}) }},
 }};
 globalThis.document = {{
   querySelector: (sel) => els[sel] || null,
