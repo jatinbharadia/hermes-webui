@@ -1720,3 +1720,35 @@ def test_mobile_enter_does_not_affect_desktop_logic():
     # The else branch (desktop, sends on Enter without Shift) must still be present
     assert "if(!e.shiftKey){e.preventDefault();send();" in boot_js, \
         "Desktop Enter-to-send logic (else branch) must still be present in boot.js"
+
+
+def test_resize_only_closes_dropdowns_when_phone_boundary_crossed():
+    """The window resize handler must not close composer dropdowns on
+    keyboard-induced resizes above 640px.
+
+    On compact touch devices (e.g. Pixel Fold inner screen ~804px), tapping
+    the model search input or the message box opens the on-screen keyboard,
+    which resizes the visual viewport and fires a window resize — instantly
+    dismissing a dropdown the user just opened. The handler must track
+    whether the phone/desktop boundary (max-width:640px) was actually
+    crossed (fold/unfold) and only then close phone-mode dropdown state.
+    """
+    ui_js = (REPO / "static" / "ui.js").read_text(encoding="utf-8")
+    start = ui_js.index("window.addEventListener('resize',function(){")
+    end = ui_js.index("\n});", start)
+    body = ui_js[start:end]
+    assert "_wasPhoneWidth" in body, \
+        "resize handler must track the previous phone/desktop boundary state"
+    assert "crossed" in body, \
+        "resize handler must only act when the phone/desktop boundary is crossed"
+    assert "if(!crossed) return;" in body, \
+        "keyboard-induced resizes (no boundary crossing) must be a no-op"
+    # The close calls must remain so fold/unfold still resets phone-mode state
+    for expected in (
+        "closeMobileComposerConfig();",
+        "closeModelDropdown();",
+        "closeReasoningDropdown();",
+    ):
+        assert expected in body, \
+            f"boundary crossing must still close phone-mode state ({expected})"
+

@@ -5853,13 +5853,22 @@ document.addEventListener('keydown',function(e){
   closeReasoningDropdown();
 });
 
+// Only close phone-mode dropdowns when the phone/desktop boundary is actually
+// CROSSED. Blindly closing on every resize breaks compact touch devices: opening
+// the on-screen keyboard resizes the visual viewport and fires a window resize,
+// which would slam an open model dropdown shut the moment the user taps the
+// model search input (e.g. Pixel Fold inner screen at ~804px, where the
+// max-width:640px media query is false so the guard below always ran).
+let _wasPhoneWidth=null;
 window.addEventListener('resize',function(){
-  if(window.matchMedia && !window.matchMedia('(max-width: 640px)').matches){
-    closeMobileComposerConfig();
-    closeModelDropdown();
-    closeReasoningDropdown();
-    if(typeof closeWsDropdown==='function') closeWsDropdown();
-  }
+  const isPhone=window.matchMedia ? window.matchMedia('(max-width: 640px)').matches : false;
+  const crossed=_wasPhoneWidth!==null && _wasPhoneWidth!==isPhone;
+  _wasPhoneWidth=isPhone;
+  if(!crossed) return;
+  closeMobileComposerConfig();
+  closeModelDropdown();
+  closeReasoningDropdown();
+  if(typeof closeWsDropdown==='function') closeWsDropdown();
 });
 
 // ── Scroll pinning ──────────────────────────────────────────────────────────
