@@ -5853,23 +5853,39 @@ document.addEventListener('keydown',function(e){
   closeReasoningDropdown();
 });
 
-// Only close phone-mode dropdowns when the phone/desktop boundary is actually
-// CROSSED. Blindly closing on every resize breaks compact touch devices: opening
-// the on-screen keyboard resizes the visual viewport and fires a window resize,
-// which would slam an open model dropdown shut the moment the user taps the
-// model search input (e.g. Pixel Fold inner screen at ~804px, where the
-// max-width:640px media query is false so the guard below always ran).
-let _wasPhoneWidth=null;
-window.addEventListener('resize',function(){
-  const isPhone=window.matchMedia ? window.matchMedia('(max-width: 640px)').matches : false;
-  const crossed=_wasPhoneWidth!==null && _wasPhoneWidth!==isPhone;
-  _wasPhoneWidth=isPhone;
-  if(!crossed) return;
+// Close phone-mode composer state when the phone/desktop boundary (640px) is
+// actually CROSSED — not on every window resize. Keyboard-induced resizes
+// (on-screen keyboard opening/closing on compact touch devices, e.g. the
+// Pixel Fold inner screen at ~804px) resize the visual viewport and fire a
+// window resize, which previously slammed an open model dropdown shut the
+// moment the user tapped the model search input. A MediaQueryList change
+// listener fires only when the (max-width:640px) match itself flips, so it
+// cannot fire for a keyboard-only height change, and it has no uninitialized
+// first-event state (the first boundary crossing after page load is still
+// delivered). Same pattern as static/pwa-startup.js:37-44.
+//
+// Direction policy: close on BOTH crossings (fold AND unfold). Upstream
+// previously closed only when leaving phone mode; closing when entering it
+// too is intentional — the phone layout's mobile drawer owns the sidebar and
+// the composer footer switches to the mobile config panel, so any desktop
+// dropdown state left open across a fold would render against the wrong
+// layout. Both directions reset the composer menu family deterministically.
+const _phoneWidthQuery=(typeof window!=='undefined'&&window.matchMedia)
+  ? window.matchMedia('(max-width: 640px)')
+  : null;
+function _onPhoneBoundaryChange(){
   closeMobileComposerConfig();
   closeModelDropdown();
   closeReasoningDropdown();
   if(typeof closeWsDropdown==='function') closeWsDropdown();
-});
+}
+if(_phoneWidthQuery){
+  if(typeof _phoneWidthQuery.addEventListener==='function'){
+    _phoneWidthQuery.addEventListener('change',_onPhoneBoundaryChange);
+  }else if(typeof _phoneWidthQuery.addListener==='function'){
+    _phoneWidthQuery.addListener(_onPhoneBoundaryChange);
+  }
+}
 
 // ── Scroll pinning ──────────────────────────────────────────────────────────
 // When streaming, auto-scroll only while the user is following the live tail.

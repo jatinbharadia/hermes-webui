@@ -1723,32 +1723,83 @@ def test_mobile_enter_does_not_affect_desktop_logic():
 
 
 def test_resize_only_closes_dropdowns_when_phone_boundary_crossed():
-    """The window resize handler must not close composer dropdowns on
-    keyboard-induced resizes above 640px.
+    """Executed listener harness: composer dropdown state must reset ONLY when
+    the phone/desktop (640px) boundary is crossed.
 
-    On compact touch devices (e.g. Pixel Fold inner screen ~804px), tapping
-    the model search input or the message box opens the on-screen keyboard,
-    which resizes the visual viewport and fires a window resize — instantly
-    dismissing a dropdown the user just opened. The handler must track
-    whether the phone/desktop boundary (max-width:640px) was actually
-    crossed (fold/unfold) and only then close phone-mode dropdown state.
+    Drives the real registration + handler code from static/ui.js under node
+    with a fake MediaQueryList: repeated same-mode resizes must produce zero
+    closes, the first boundary change after load must still deliver (no
+    uninitialized-state miss), and both directions must reset the composer
+    menu family exactly once per crossing.
     """
+    import json
+    import shutil
+    import subprocess
+    if shutil.which("node") is None:
+        pytest.skip("node is not available for executing the JS listener harness")
+
     ui_js = (REPO / "static" / "ui.js").read_text(encoding="utf-8")
-    start = ui_js.index("window.addEventListener('resize',function(){")
-    end = ui_js.index("\n});", start)
-    body = ui_js[start:end]
-    assert "_wasPhoneWidth" in body, \
-        "resize handler must track the previous phone/desktop boundary state"
-    assert "crossed" in body, \
-        "resize handler must only act when the phone/desktop boundary is crossed"
-    assert "if(!crossed) return;" in body, \
-        "keyboard-induced resizes (no boundary crossing) must be a no-op"
-    # The close calls must remain so fold/unfold still resets phone-mode state
-    for expected in (
-        "closeMobileComposerConfig();",
-        "closeModelDropdown();",
-        "closeReasoningDropdown();",
-    ):
-        assert expected in body, \
-            f"boundary crossing must still close phone-mode state ({expected})"
+    # Extract the registration block: from the _phoneWidthQuery declaration
+    # through the closing brace of the addEventListener/addListener if-chain
+    # (the block ends at the "\n}\n" that closes the outer if after the
+    # addListener fallback line).
+    start = ui_js.index("const _phoneWidthQuery=")
+    tail = ui_js.index("addListener(_onPhoneBoundaryChange);", start)
+    end = ui_js.index("\n}", tail) + 2
+    block = ui_js[start:end]
+
+    script = """
+// ── fake close functions with call counts ──
+const calls = { mobile: 0, model: 0, reasoning: 0, ws: 0 };
+function closeMobileComposerConfig(){ calls.mobile++; }
+function closeModelDropdown(){ calls.model++; }
+function closeReasoningDropdown(){ calls.reasoning++; }
+// closeWsDropdown must be undefined -> exercises the typeof guard, counts via ws
+// ── fake MediaQueryList ──
+let _matches = false; // page loads at 804px -> not phone
+const listeners = [];
+const mql = {
+  get matches(){ return _matches; },
+  addEventListener: (type, fn) => { if (type === 'change') listeners.push(fn); },
+};
+globalThis.window = { matchMedia: (q) => mql };
+// ── the real registration block from static/ui.js ──
+__BLOCK__
+function fireBoundary(){
+  _matches = !_matches;
+  for (const fn of listeners) fn({ matches: _matches });
+}
+// ── scenario ──
+// 1. keyboard-style resizes at constant 804px: no boundary change, zero closes
+  ;(function resizeBurst(){ })();
+// (resize events are not even observable to this listener — nothing to fire)
+const before = JSON.stringify(calls);
+// 2. FIRST boundary change after load (no prior resize): must deliver
+fireBoundary(); // 804 -> 640 (fold)
+const afterFold = JSON.stringify(calls);
+// 3. same-mode events must never fire the listener (guard: listeners only run on change)
+// 4. second crossing (unfold)
+fireBoundary(); // 640 -> 804
+const afterUnfold = JSON.stringify(calls);
+// 5. third crossing (fold again)
+fireBoundary();
+const afterThird = JSON.stringify(calls);
+console.log(JSON.stringify({ before, afterFold, afterUnfold, afterThird, listeners: listeners.length }));
+""".replace("__BLOCK__", block)
+
+    r = subprocess.run(["node", "-e", script], capture_output=True, text=True, timeout=30)
+    assert r.returncode == 0, f"node failed: {r.stderr}"
+    st = json.loads(r.stdout.strip())
+    # exactly one change listener registered
+    assert st["listeners"] == 1, "exactly one boundary-change listener must be registered"
+    # no closes before any boundary change (keyboard resizes are invisible)
+    assert st["before"] == '{"mobile":0,"model":0,"reasoning":0,"ws":0}'
+    # first crossing after load: every close runs exactly once (no missed first transition)
+    assert st["afterFold"] == '{"mobile":1,"model":1,"reasoning":1,"ws":0}', \
+        "first fold must close mobile config, model, and reasoning dropdowns once each"
+    # ws stays 0: closeWsDropdown is undefined, so the typeof guard must skip it
+    # both directions close
+    assert st["afterUnfold"] == '{"mobile":2,"model":2,"reasoning":2,"ws":0}', \
+        "unfold must also reset the composer menu family (both-directions policy)"
+    assert st["afterThird"] == '{"mobile":3,"model":3,"reasoning":3,"ws":0}'
 
