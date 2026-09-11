@@ -5091,6 +5091,15 @@ function _fitComposerFooter(){
   if(!left) return;
   if(!left.clientWidth) return;
   const overflows=function(){return left.scrollWidth>left.clientWidth+1;};
+  // Burger-mode cleanup trigger: cf-burger can flip WITHOUT any 640px
+  // boundary crossing (this fit path measures real overflow at any width,
+  // e.g. a constant 760px viewport). CSS hides the inline model/reasoning/
+  // toolset anchors in burger mode and reveals the shared mobile config
+  // button/panel, so an open dropdown would outlive its hidden anchor.
+  // Capture the pre-measurement burger state and fire the composer menu
+  // cleanup when it actually TRANSITIONS — not on every fit pass, so
+  // mutation-driven refits with unchanged geometry remain harmless.
+  const wasBurger=footer.classList.contains('cf-burger');
   // Measure without ever PAINTING the expanded state. Stripping the stage
   // classes makes the footer briefly full-width, which grows the composer and
   // shrinks #messages by a few px; restoring them a moment later shrinks it
@@ -5125,6 +5134,14 @@ function _fitComposerFooter(){
       footer.style.height=prevHeight;
       footer.style.visibility=prevVisibility;
     }
+  }
+  // Post-restore transition check: fire the same composer menu cleanup used
+  // by the 640px MediaQueryList boundary listener (see _onPhoneBoundaryChange
+  // above). Both burger transitions (entering and leaving) close — the same
+  // deterministic both-directions policy as the boundary listener.
+  const isBurger=next.includes('cf-burger');
+  if(isBurger!==wasBurger && typeof _onPhoneBoundaryChange==='function'){
+    try{ _onPhoneBoundaryChange(); }catch(_){ }
   }
 }
 window._fitComposerFooter=_fitComposerFooter;
