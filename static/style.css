@@ -2990,12 +2990,17 @@
      where the user can click the rail should also be a width where the collapse
      rule applies. :not(.mobile-open) excludes the slide-in overlay below 641px. */
   @media(min-width:641px){
-    .layout.sidebar-collapsed .sidebar:not(.mobile-open){width:0 !important;min-width:0;opacity:0;transform:translateX(-14px);border-right-color:transparent;pointer-events:none;overflow:hidden;}
+    .layout.sidebar-collapsed .sidebar:not(.mobile-open){width:0 !important;min-width:0;opacity:0;transform:translateX(-14px);border-right-color:transparent;pointer-events:none;overflow:hidden;visibility:hidden;transition:width .2s ease,opacity .2s ease,transform .2s ease,visibility 0s linear .2s;}
     .layout.sidebar-collapsed .sidebar .resize-handle{display:none;}
+    /* #7364 a11y: the collapsed sidebar is 0px + opacity:0 but still in the
+       focus order, so Tab walked into invisible controls. visibility:hidden
+       removes it from focus/AT; delay it so the collapse transition still
+       animates, and restore immediately when expanded or opened as a drawer. */
+    .layout:not(.sidebar-collapsed) .sidebar,.sidebar.mobile-open{visibility:visible;transition:width .2s ease,opacity .2s ease,transform .2s ease,visibility 0s;}
     /* Flash prevention: an inline <script> in index.html sets this dataset on
        <html> BEFORE the stylesheet loads, so the collapsed state paints from
        frame 0 with zero flicker on cold loads. boot.js clears it once JS owns the state. */
-    html[data-sidebar-collapsed="1"] .sidebar:not(.mobile-open){width:0 !important;min-width:0;opacity:0;transform:translateX(-14px);border-right-color:transparent;pointer-events:none;overflow:hidden;transition:none;}
+    html[data-sidebar-collapsed="1"] .sidebar:not(.mobile-open){width:0 !important;min-width:0;opacity:0;transform:translateX(-14px);border-right-color:transparent;pointer-events:none;overflow:hidden;visibility:hidden;transition:none;}
   }
 
   @media(max-width:900px){
@@ -3010,8 +3015,8 @@
       --mobile-rightpanel-width:min(300px, 100vw);
       right:calc(-1 * var(--mobile-rightpanel-width))!important;
       top:0;bottom:0;width:var(--mobile-rightpanel-width)!important;max-width:100vw!important;z-index:200;padding-top:var(--app-titlebar-safe-top);box-sizing:border-box;transition:right .25s ease;
-      box-shadow:none!important;}
-    .rightpanel.mobile-open{right:0!important;box-shadow:-4px 0 24px rgba(0,0,0,.4)!important;}
+      box-shadow:none!important;visibility:hidden;transition:right .25s ease,visibility 0s linear .25s;}
+    .rightpanel.mobile-open{right:0!important;box-shadow:-4px 0 24px rgba(0,0,0,.4)!important;visibility:visible;transition:right .25s ease,visibility 0s;}
     .rightpanel .resize-handle{display:none;}
     .rightpanel .panel-header{row-gap:8px;}
     .rightpanel .panel-actions{align-items:center;gap:8px;}
