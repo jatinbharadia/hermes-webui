@@ -20,6 +20,8 @@ import pathlib
 import re
 from html.parser import HTMLParser
 
+import pytest
+
 REPO = pathlib.Path(__file__).parent.parent
 HTML = (REPO / "static" / "index.html").read_text(encoding="utf-8")
 CSS  = (REPO / "static" / "style.css").read_text(encoding="utf-8")
