@@ -99,6 +99,75 @@ def _optional_declarations(css, selector):
         return {}
 
 
+def _all_media_blocks_in_order():
+    """Every @media block as (query, body) in source order.
+
+    Parsed from the comment-stripped stylesheet so the bodies are exact
+    substrings of the text `_resolved_declarations()` removes them from.
+    """
+    stripped = _strip_css_comments(CSS)
+    blocks = []
+    for match in re.finditer(r'@media\s*\(([^)]*)\)\s*\{', stripped):
+        query = match.group(1).replace(" ", "")
+        open_brace = match.end() - 1
+        depth = 0
+        for idx in range(open_brace, len(stripped)):
+            if stripped[idx] == "{":
+                depth += 1
+            elif stripped[idx] == "}":
+                depth -= 1
+                if depth == 0:
+                    blocks.append((query, stripped[open_brace + 1:idx]))
+                    break
+    return blocks
+
+
+def _media_query_matches(query, width_px):
+    for match in re.finditer(r'(min|max)-width:\s*(\d+)px', query):
+        kind, value = match.group(1), int(match.group(2))
+        if kind == "min" and width_px < value:
+            return False
+        if kind == "max" and width_px > value:
+            return False
+    return True
+
+
+def _rule_declarations_in_order(css, selector):
+    """Merge every rule matching `selector`, in source order (later wins).
+
+    A block can contain the same selector twice (e.g. the legacy
+    `.rightpanel{display:none}` followed by the drawer override), and the later
+    rule is the one the browser applies — so the first match is not enough.
+    """
+    merged = {}
+    for match in re.finditer(r'([^{}]+)\{([^{}]*)\}', _strip_css_comments(css)):
+        selectors = {part.strip() for part in match.group(1).split(",")}
+        if selector in selectors:
+            merged.update(_declarations(match.group(2)))
+    return merged
+
+
+def _resolved_declarations(width_px, selector):
+    """Effective declarations for `selector` at `width_px`, following source order.
+
+    Resolves the cascade the way a browser does for equal-specificity selectors:
+    top-level rules first, then every matching @media block in source order, so a
+    later block's declaration wins over an earlier one. This catches the class of
+    bug where a narrower media block re-declares a property (e.g. `transition`)
+    and silently drops what an encompassing block had set.
+    """
+    css = _strip_css_comments(CSS)
+    blocks = _all_media_blocks_in_order()
+    top_level = css
+    for _, body in blocks:
+        top_level = top_level.replace(body, "")
+    merged = dict(_rule_declarations_in_order(top_level, selector))
+    for query, body in blocks:
+        if _media_query_matches(query, width_px):
+            merged.update(_rule_declarations_in_order(body, selector))
+    return merged
+
+
 def _js_function_body(src, name):
     signature = f"function {name}("
     start = src.find(signature)
@@ -660,6 +729,44 @@ def test_sidebar_phone_hamburger_still_uses_drawer():
     assert st['afterOpen']['sidebar'] == ['mobile-panel-drawer', 'mobile-open'], "phone still uses the drawer"
     assert st['afterOpen']['layout'] == [], "no desktop collapse at phone width"
     assert st['storage'] == {}, "the phone drawer never persists a collapse preference"
+
+
+def test_workspace_drawer_close_keeps_visibility_through_the_slide_at_phone_width():
+    """The drawer must stay visible while it slides out at phone widths.
+
+    The <=640px block re-declared `transition` as `right .25s ease`, which
+    dropped the `visibility 0s linear .25s` inherited from the encompassing
+    <=900px rule. `visibility:hidden` then applied on the first frame, so the
+    drawer vanished instead of sliding away. Resolve the cascade at 390px and
+    require the delayed visibility on the closed state.
+    """
+    d = _resolved_declarations(390, ".rightpanel")
+    assert d.get("visibility") == "hidden", "closed drawer must be visibility:hidden"
+    assert "visibility 0s linear .25s" in d.get("transition", ""), (
+        "closed drawer at 390px must delay visibility so the slide-out is visible, "
+        f"got transition: {d.get('transition')!r}"
+    )
+
+
+def test_workspace_drawer_close_keeps_visibility_through_the_slide_at_compact_width():
+    """Same guarantee at the compact (foldable/tablet) width."""
+    d = _resolved_declarations(804, ".rightpanel")
+    assert d.get("visibility") == "hidden"
+    assert "visibility 0s linear .25s" in d.get("transition", ""), (
+        f"got transition: {d.get('transition')!r}"
+    )
+
+
+def test_workspace_drawer_open_reveals_without_the_hide_delay():
+    """Opening must reveal immediately: no hide delay on the open state, at any
+    width where the drawer exists."""
+    for width in (390, 804):
+        d = _resolved_declarations(width, ".rightpanel.mobile-open")
+        assert d.get("visibility") == "visible", f"{width}px must be visible"
+        assert "visibility 0s" in d.get("transition", ""), f"{width}px"
+        assert "linear .25s" not in d.get("transition", ""), (
+            f"{width}px open state must not inherit the hide delay"
+        )
 
 
 def test_sidebar_lifecycle_unfold_drawer_open_640_to_804():
