@@ -396,6 +396,14 @@ function syncWorkspacePanelUI(){
 }
 
 function toggleMobileSidebar(){
+  // At >=641px the sidebar is the real desktop column, not the phone drawer.
+  // Route through toggleSidebar() so the click produces the persistent
+  // expanded/collapsed state instead of the drawer's temporary `mobile-open`
+  // class: that class is cleared by the next _applySidebarState() run, and on
+  // tablets/foldables a same-width resize happens constantly (on-screen
+  // keyboard, browser toolbar collapsing, split-screen), so the sidebar used
+  // to close by itself right after the user opened it.
+  if(_isDesktopWidth()){toggleSidebar();return;}
   const sidebar=document.querySelector('.sidebar');
   if(!sidebar)return;
   const isOpen=sidebar.classList.contains('mobile-open');
@@ -670,6 +678,10 @@ function mobileSwitchPanel(name){
   if(name==='chat'){
     closeMobileSidebar();
   } else {
+    // Same reason as toggleMobileSidebar(): above 640px reveal the real
+    // expanded sidebar rather than a drawer state that the next resize (or
+    // _applySidebarState()) would immediately drop.
+    if(_isDesktopWidth()){expandSidebar();return;}
     const sidebar=document.querySelector('.sidebar');
     if(sidebar){
       sidebar.classList.remove('mobile-session-page');

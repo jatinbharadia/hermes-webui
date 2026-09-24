@@ -532,6 +532,136 @@ console.log(JSON.stringify({{
     return json.loads(r.stdout.strip())
 
 
+def _run_sidebar_open_then_resize(width, pref, opener, clicks=1):
+    """Open the sidebar with the real opener, then run the real viewport-change
+    apply at the SAME width, and return the state after each step.
+
+    This is the reported #7364 regression: at >=641px the opener must reach the
+    real expanded state, not the phone drawer's temporary `mobile-open` class —
+    that class is cleared by the next `_applySidebarState()` run, so on tablets
+    and foldables (where a same-width resize happens constantly: on-screen
+    keyboard, browser toolbar collapsing, split-screen) the sidebar closed by
+    itself right after the user opened it.
+
+    `opener`: 'hamburger' (toggleMobileSidebar, wired to #btnHamburger) or
+    'panel' (mobileSwitchPanel, wired to the rail panel buttons).
+    """
+    import shutil
+    if shutil.which("node") is None:
+        pytest.skip("node is not available for executing the JS sidebar opener harness")
+    import subprocess
+    helpers = _extract_boot_js_functions(
+        'closeMobileSidebar', '_isDesktopWidth', '_isCompactWorkspaceViewport',
+        '_sidebarShouldCollapse', '_syncSidebarAria', '_applySidebarState',
+        '_isSidebarCollapsed', 'toggleSidebar', 'expandSidebar',
+        'toggleMobileSidebar', 'mobileSwitchPanel')
+    pref_js = 'null' if pref is None else repr(pref)
+    open_js = 'toggleMobileSidebar();' if opener == 'hamburger' else "mobileSwitchPanel('workspaces');"
+    script = f"""
+{helpers}
+function fakeClassList(initial) {{
+  const s = new Set(initial || []);
+  return {{
+    set: s,
+    add: (...c) => c.forEach(x => s.add(x)),
+    remove: (...c) => c.forEach(x => s.delete(x)),
+    toggle: (c, force) => {{
+      if (force === undefined) {{ s.has(c) ? s.delete(c) : s.add(c); return s.has(c); }}
+      if (force) s.add(c); else s.delete(c); return force;
+    }},
+    contains: (c) => s.has(c),
+  }};
+}}
+const els = {{
+  '.layout':    {{ classList: fakeClassList([]) }},
+  '.sidebar':   {{ classList: fakeClassList([]) }},
+  '#mobileOverlay': {{ classList: fakeClassList([]) }},
+}};
+globalThis.document = {{
+  querySelector: (sel) => els[sel] || null,
+  querySelectorAll: () => [],
+  documentElement: {{ classList: fakeClassList([]), removeAttribute() {{}} }},
+}};
+globalThis.$ = (id) => els['#' + id] || null;
+let _width = {width};
+globalThis.matchMedia = (q) => {{
+  q = q.replace(/\\\\s+/g, '');
+  if (q === '(min-width:641px)') return {{ matches: _width >= 641 }};
+  if (q === '(max-width:900px)') return {{ matches: _width <= 900 }};
+  return {{ matches: false }};
+}};
+globalThis.window = {{ matchMedia: globalThis.matchMedia }};
+const _store = {{}};
+const _SIDEBAR_COLLAPSED_KEY = 'hermes-webui-sidebar-collapsed';
+if ({pref_js} !== null) _store[_SIDEBAR_COLLAPSED_KEY] = {pref_js};
+globalThis.localStorage = {{
+  getItem: (k) => (k in _store ? _store[k] : null),
+  setItem: (k, v) => {{ _store[k] = v; }},
+  removeItem: (k) => {{ delete _store[k]; }},
+}};
+function _isCompactWorkspaceViewport() {{ return _width <= 900; }}
+function _syncSidebarAria() {{}}
+function switchPanel(name) {{ globalThis._lastPanel = name; }}
+const snap = () => ({{
+  layout: [...els['.layout'].classList.set],
+  sidebar: [...els['.sidebar'].classList.set],
+}});
+_applySidebarState();
+const afterBoot = snap();
+for (let i = 0; i < {clicks}; i++) {{ {open_js} }}
+const afterOpen = snap();
+_applySidebarState();
+const afterResize = snap();
+console.log(JSON.stringify({{
+  afterBoot, afterOpen, afterResize, storage: _store,
+}}));
+"""
+    r = subprocess.run(["node", "-e", script], capture_output=True, text=True, timeout=30)
+    assert r.returncode == 0, f"node failed: {r.stderr}"
+    return json.loads(r.stdout.strip())
+
+
+def test_sidebar_hamburger_survives_same_width_resize_at_804px():
+    """The reported blocker: at 804px with no stored preference, open the
+    sidebar from the hamburger, then resize at the SAME width. It must stay
+    open — the opener has to reach the real expanded state, not the drawer's
+    temporary `mobile-open` class that the next apply clears."""
+    st = _run_sidebar_open_then_resize(804, None, 'hamburger')
+    assert st['afterBoot']['layout'] == ['sidebar-collapsed'], "compact band with no pref boots collapsed"
+    assert st['afterOpen']['layout'] == [], "opening at >=641px must clear sidebar-collapsed"
+    assert st['afterOpen']['sidebar'] == [], "must not use the phone drawer above 640px"
+    assert st['afterResize']['layout'] == [], "a same-width resize must not re-collapse the sidebar"
+    assert st['afterResize']['sidebar'] == []
+    assert st['storage'] == {'hermes-webui-sidebar-collapsed': '0'}, "an explicit open is persisted"
+
+
+def test_sidebar_switch_panel_survives_same_width_resize_at_804px():
+    """Same guarantee for the rail panel buttons (mobileSwitchPanel), which
+    took the identical temporary-drawer path."""
+    st = _run_sidebar_open_then_resize(804, None, 'panel')
+    assert st['afterOpen']['layout'] == [], "switching panel at >=641px must clear sidebar-collapsed"
+    assert st['afterOpen']['sidebar'] == [], "must not use the phone drawer above 640px"
+    assert st['afterResize']['layout'] == [], "a same-width resize must not re-collapse the sidebar"
+
+
+def test_sidebar_hamburger_still_toggles_closed_at_804px():
+    """The hamburger stays a toggle: a second click collapses the sidebar, and
+    the collapsed state also survives a same-width resize."""
+    st = _run_sidebar_open_then_resize(804, None, 'hamburger', clicks=2)
+    assert st['afterOpen']['layout'] == ['sidebar-collapsed'], "second click must collapse"
+    assert st['afterResize']['layout'] == ['sidebar-collapsed'], "stays collapsed across the resize"
+    assert st['storage'] == {'hermes-webui-sidebar-collapsed': '1'}
+
+
+def test_sidebar_phone_hamburger_still_uses_drawer():
+    """Below 641px the mobile drawer path is unchanged: the hamburger opens the
+    slide-in drawer, and no desktop collapse state is involved."""
+    st = _run_sidebar_open_then_resize(390, None, 'hamburger')
+    assert st['afterOpen']['sidebar'] == ['mobile-panel-drawer', 'mobile-open'], "phone still uses the drawer"
+    assert st['afterOpen']['layout'] == [], "no desktop collapse at phone width"
+    assert st['storage'] == {}, "the phone drawer never persists a collapse preference"
+
+
 def test_sidebar_lifecycle_unfold_drawer_open_640_to_804():
     """The round-3 blocker, executed: drawer open at 640px, unfold to 804px
     with no stored preference. The shared apply helper must clear the mobile
