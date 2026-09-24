@@ -2990,13 +2990,13 @@
      where the user can click the rail should also be a width where the collapse
      rule applies. :not(.mobile-open) excludes the slide-in overlay below 641px. */
   @media(min-width:641px){
-    .layout.sidebar-collapsed .sidebar:not(.mobile-open){width:0 !important;min-width:0;opacity:0;transform:translateX(-14px);border-right-color:transparent;pointer-events:none;overflow:hidden;visibility:hidden;transition:width .2s ease,opacity .2s ease,transform .2s ease,visibility 0s linear .2s;}
+    .layout.sidebar-collapsed .sidebar:not(.mobile-open){width:0 !important;min-width:0;opacity:0;transform:translateX(-14px);border-right-color:transparent;pointer-events:none;overflow:hidden;visibility:hidden;transition:width .24s cubic-bezier(.22,1,.36,1),opacity .18s ease,transform .24s cubic-bezier(.22,1,.36,1),border-color .24s ease,visibility 0s linear .2s;}
     .layout.sidebar-collapsed .sidebar .resize-handle{display:none;}
     /* #7364 a11y: the collapsed sidebar is 0px + opacity:0 but still in the
        focus order, so Tab walked into invisible controls. visibility:hidden
        removes it from focus/AT; delay it so the collapse transition still
        animates, and restore immediately when expanded or opened as a drawer. */
-    .layout:not(.sidebar-collapsed) .sidebar,.sidebar.mobile-open{visibility:visible;transition:width .2s ease,opacity .2s ease,transform .2s ease,visibility 0s;}
+    .layout:not(.sidebar-collapsed) .sidebar,.sidebar.mobile-open{visibility:visible;transition:width .24s cubic-bezier(.22,1,.36,1),opacity .18s ease,transform .24s cubic-bezier(.22,1,.36,1),border-color .24s ease,visibility 0s;}
     /* Flash prevention: an inline <script> in index.html sets this dataset on
        <html> BEFORE the stylesheet loads, so the collapsed state paints from
        frame 0 with zero flicker on cold loads. boot.js clears it once JS owns the state. */
